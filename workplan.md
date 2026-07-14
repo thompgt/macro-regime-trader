@@ -19,10 +19,10 @@ engine with real market data and a live Jupyter demo. Update checkboxes as work 
 - [x] Matching unit tests for each module above (29/29 passing)
 
 ## Phase 3 — Integration
-- [ ] `backtest/engine.py` — walk-forward loop wiring engine → strategy → risk → broker
-- [ ] `backtest/analytics.py` — Sharpe, max drawdown, win rate, total return
-- [ ] `backtest/benchmarks.py` — buy-and-hold, 200-DMA comparison
-- [ ] `cli.py` — `mrt backtest`, `mrt dashboard` entry points
+- [x] `backtest/engine.py` — walk-forward loop wiring engine → strategy → risk → broker
+- [x] `backtest/analytics.py` — Sharpe, max drawdown, win rate, total return
+- [x] `backtest/benchmarks.py` — buy-and-hold, 200-DMA comparison
+- [x] `cli.py` — `mrt backtest`, `mrt dashboard` entry points (verified end-to-end against real SPY data via yfinance)
 
 ## Phase 4 — Dashboard + Demo (parallelized)
 - [ ] `dashboard/app.py` — Streamlit: live regime state, equity curve, trade log
