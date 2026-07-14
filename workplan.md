@@ -11,12 +11,12 @@ engine with real market data and a live Jupyter demo. Update checkboxes as work 
 - [x] `data/provider.py` — `DataProvider` protocol
 
 ## Phase 2 — Core modules (parallelized)
-- [ ] `core/macro_engine.py` — `MacroRegimeEngine`: EMA crossover + volume z-score → `Regime`
-- [ ] `core/strategies.py` — `StrategyManager`: exposure sizing, Donchian breakout, ATR stop → `Signal`
-- [ ] `core/risk_manager.py` — `RiskManager`: circuit breaker, kill switch, `TRADING_LOCKED.json` → `RiskDecision`
-- [ ] `simulation/mock_broker.py` — `MockBroker`: ledger, slippage, trailing stop execution → `Fill`
-- [ ] `data/yfinance_provider.py` — `YFinanceProvider` implementing `DataProvider`, with on-disk parquet cache
-- [ ] Matching unit tests for each module above
+- [x] `core/macro_engine.py` — `MacroRegimeEngine`: EMA crossover + volume z-score → `Regime`
+- [x] `core/strategies.py` — `StrategyManager`: exposure sizing, Donchian breakout, ATR stop → `Signal`
+- [x] `core/risk_manager.py` — `RiskManager`: circuit breaker, kill switch, `TRADING_LOCKED.json` → `RiskDecision`
+- [x] `simulation/mock_broker.py` — `MockBroker`: ledger, slippage, trailing stop execution → `Fill`
+- [x] `data/yfinance_provider.py` — `YFinanceProvider` implementing `DataProvider`, with on-disk parquet cache
+- [x] Matching unit tests for each module above (29/29 passing)
 
 ## Phase 3 — Integration
 - [ ] `backtest/engine.py` — walk-forward loop wiring engine → strategy → risk → broker
