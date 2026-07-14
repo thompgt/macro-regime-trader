@@ -25,8 +25,8 @@ engine with real market data and a live Jupyter demo. Update checkboxes as work 
 - [x] `cli.py` — `mrt backtest`, `mrt dashboard` entry points (verified end-to-end against real SPY data via yfinance)
 
 ## Phase 4 — Dashboard + Demo (parallelized)
-- [ ] `dashboard/app.py` — Streamlit: live regime state, equity curve, trade log
-- [ ] `notebooks/demo.ipynb` — real-data walkthrough: fetch → detect regime → backtest → plot
+- [x] `dashboard/app.py` — Streamlit: live regime state, equity curve, trade log
+- [x] `notebooks/demo.ipynb` — real-data walkthrough: fetch → detect regime → backtest → plot (executed end-to-end, no errors, real SPY data)
 
 ## Phase 5 — Production hardening
 - [ ] `.github/workflows/ci.yml` — lint (ruff), type-check (mypy), pytest on push/PR
