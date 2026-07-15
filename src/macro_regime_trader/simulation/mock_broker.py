@@ -82,7 +82,7 @@ class MockBroker:
                     "slippage_cost": f.slippage_cost,
                     "equity_after": equity,
                 }
-                for f, equity in zip(self._ledger, self._equity_curve)
+                for f, equity in zip(self._ledger, self._equity_curve, strict=True)
             ],
             columns=["timestamp", "side", "quantity", "price", "slippage_cost", "equity_after"],
         )
@@ -140,7 +140,9 @@ class MockBroker:
         delta_value = target_value - current_value
 
         if not price or abs(delta_value) / price < 1e-9:
-            return Fill(timestamp=timestamp, side="hold", quantity=0.0, price=price, slippage_cost=0.0)
+            return Fill(
+                timestamp=timestamp, side="hold", quantity=0.0, price=price, slippage_cost=0.0
+            )
 
         if delta_value > 0:
             # Size the buy off the slippage-adjusted fill price so the dollar

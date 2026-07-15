@@ -39,8 +39,12 @@ class MacroRegimeEngine:
         close = ohlcv["close"]
         volume = ohlcv["volume"]
 
-        ema_fast = close.ewm(span=settings.ema_fast, min_periods=settings.ema_fast, adjust=False).mean()
-        ema_slow = close.ewm(span=settings.ema_slow, min_periods=settings.ema_slow, adjust=False).mean()
+        ema_fast = close.ewm(
+            span=settings.ema_fast, min_periods=settings.ema_fast, adjust=False
+        ).mean()
+        ema_slow = close.ewm(
+            span=settings.ema_slow, min_periods=settings.ema_slow, adjust=False
+        ).mean()
 
         momentum = (ema_fast - ema_slow) / ema_slow
         momentum_slope = momentum.diff()
@@ -91,6 +95,7 @@ class MacroRegimeEngine:
         if regimes.empty or regimes.iloc[-1] is None or pd.isna(regimes.iloc[-1]):
             raise ValueError(
                 "Not enough history to classify the latest bar; "
-                f"need at least {max(self.settings.ema_slow, self.settings.volume_zscore_window)} bars."
+                f"need at least "
+                f"{max(self.settings.ema_slow, self.settings.volume_zscore_window)} bars."
             )
         return Regime(regimes.iloc[-1])

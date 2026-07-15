@@ -136,7 +136,10 @@ class RiskManager:
 
     @staticmethod
     def _drawdown(baseline: float, current: float) -> float:
-        """Fractional decline of ``current`` below ``baseline`` (0.0 if baseline <= 0 or current >= baseline)."""
+        """Fractional decline of ``current`` below ``baseline``.
+
+        Returns 0.0 if ``baseline <= 0`` or ``current >= baseline``.
+        """
         if baseline <= 0:
             return 0.0
         return max(0.0, (baseline - current) / baseline)
