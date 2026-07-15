@@ -7,6 +7,7 @@ yfinance's real output (including its MultiIndex-columns variant).
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -38,7 +39,9 @@ class FakeDownloader:
         self.frame_factory = frame_factory
         self.call_count = 0
 
-    def __call__(self, ticker, start=None, end=None, interval="1d", progress=False, auto_adjust=True):
+    def __call__(
+        self, ticker, start=None, end=None, interval="1d", progress=False, auto_adjust=True
+    ):
         self.call_count += 1
         return self.frame_factory()
 
@@ -53,7 +56,7 @@ def test_first_call_writes_cache_and_returns_normalized_frame(tmp_path):
     assert isinstance(result.index, pd.DatetimeIndex)
     assert result.index.tz is None
     assert result.index.is_monotonic_increasing
-    assert result.dtypes.apply(lambda d: d == float).all()
+    assert result.dtypes.apply(lambda d: d.type == np.float64).all()
     assert downloader.call_count == 1
 
     cache_files = list(tmp_path.glob("*.parquet"))

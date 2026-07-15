@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from macro_regime_trader.config import get_settings
 from macro_regime_trader.core.risk_manager import RiskManager
 from macro_regime_trader.types import Regime, RiskDecision, Signal
@@ -93,9 +91,7 @@ def test_kill_switch_trips_and_locks_permanently(tmp_path):
 def test_fresh_manager_honors_pre_existing_lock_file(tmp_path):
     settings = get_settings()
     lock_file = tmp_path / settings.lock_file_path
-    lock_file.write_text(
-        json.dumps({"reason": "kill_switch_triggered", "peak_equity": 100_000.0})
-    )
+    lock_file.write_text(json.dumps({"reason": "kill_switch_triggered", "peak_equity": 100_000.0}))
 
     rm = RiskManager(settings=settings, base_dir=tmp_path, check_existing_lock=True)
     signal = make_signal(0.5)
@@ -110,9 +106,7 @@ def test_fresh_manager_honors_pre_existing_lock_file(tmp_path):
 def test_manager_without_check_existing_lock_ignores_stray_file(tmp_path):
     settings = get_settings()
     lock_file = tmp_path / settings.lock_file_path
-    lock_file.write_text(
-        json.dumps({"reason": "kill_switch_triggered", "peak_equity": 100_000.0})
-    )
+    lock_file.write_text(json.dumps({"reason": "kill_switch_triggered", "peak_equity": 100_000.0}))
 
     rm = RiskManager(settings=settings, base_dir=tmp_path)
     signal = make_signal(0.5)

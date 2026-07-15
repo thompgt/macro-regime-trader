@@ -10,7 +10,11 @@ from macro_regime_trader.backtest.analytics import (
     win_rate,
 )
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
-from macro_regime_trader.backtest.engine import run_backtest, run_walk_forward_backtest, walk_forward_windows
+from macro_regime_trader.backtest.engine import (
+    run_backtest,
+    run_walk_forward_backtest,
+    walk_forward_windows,
+)
 from macro_regime_trader.config import Settings
 
 
@@ -30,7 +34,9 @@ def _synthetic_ohlcv(n: int = 300, seed: int = 0, drift: float = 0.001) -> pd.Da
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(train_window=60, test_window=30, ema_fast=5, ema_slow=10, donchian_window=10, atr_window=5)
+    return Settings(
+        train_window=60, test_window=30, ema_fast=5, ema_slow=10, donchian_window=10, atr_window=5
+    )
 
 
 def test_run_backtest_produces_full_length_equity_curve(settings):
