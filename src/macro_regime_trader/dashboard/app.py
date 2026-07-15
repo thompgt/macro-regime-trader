@@ -60,9 +60,7 @@ def fetch_and_run(
     return ohlcv, result
 
 
-def build_equity_comparison(
-    result: BacktestResult, ohlcv: pd.DataFrame, settings
-) -> pd.DataFrame:
+def build_equity_comparison(result: BacktestResult, ohlcv: pd.DataFrame, settings) -> pd.DataFrame:
     """Combine strategy equity with benchmark curves into one DataFrame for charting."""
     bh = buy_and_hold_equity(ohlcv, settings)
     dma = dma_crossover_equity(ohlcv, settings)
@@ -120,9 +118,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Backtest Settings")
         ticker = st.text_input("Ticker", value="SPY")
-        start_date = st.date_input(
-            "Start date", value=dt.date.today() - dt.timedelta(days=5 * 365)
-        )
+        start_date = st.date_input("Start date", value=dt.date.today() - dt.timedelta(days=5 * 365))
         use_end_date = st.checkbox("Specify end date", value=False)
         end_date = None
         if use_end_date:
