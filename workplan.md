@@ -29,12 +29,12 @@ engine with real market data and a live Jupyter demo. Update checkboxes as work 
 - [x] `notebooks/demo.ipynb` — real-data walkthrough: fetch → detect regime → backtest → plot (executed end-to-end, no errors, real SPY data)
 
 ## Phase 5 — Production hardening
-- [ ] `.github/workflows/ci.yml` — lint (ruff), type-check (mypy), pytest on push/PR
-- [ ] `Dockerfile`
-- [ ] `README.md` rewrite: architecture, quickstart, notebook link
-- [ ] `.claude/skills/run-tests`, `run-backtest`, `run-dashboard`
-- [ ] `.claude/settings.json` — auto-format hook on `.py` edits
-- [ ] Full verification: `pytest`, `mrt backtest`, notebook execution, dashboard smoke test
+- [x] `.github/workflows/ci.yml` — lint (ruff), type-check (mypy), pytest on push/PR
+- [x] `Dockerfile` (verified: builds and runs `mrt backtest` end-to-end in-container)
+- [x] `README.md` rewrite: architecture, quickstart, notebook link
+- [x] `.claude/skills/run-tests`, `run-backtest`, `run-dashboard`
+- [x] `.claude/settings.json` — auto-format hook on `.py` edits (pipe-tested; needs `/hooks` reload or restart to take effect this session)
+- [x] Full verification: `pytest` (36/36), `ruff` (clean), `mypy` (clean, 20 files), `mrt backtest` (real SPY data), notebook execution (0 errors), dashboard smoke test (HTTP 200)
 
 ## Conventions
 - Commit after every module/file group lands; push immediately after each commit.
