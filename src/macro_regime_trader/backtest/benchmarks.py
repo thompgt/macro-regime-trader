@@ -28,12 +28,13 @@ def dma_crossover_equity(ohlcv: pd.DataFrame, settings: Settings | None = None) 
     cash = settings.starting_balance
     position_qty = 0.0
     equity = []
-    for price, is_invested in zip(close, invested):
+    for price, is_invested in zip(close, invested, strict=True):
         target_value = (cash + position_qty * price) * (1.0 if is_invested else 0.0)
         current_value = position_qty * price
         delta_value = target_value - current_value
         if abs(delta_value) > 1e-9:
-            fill_price = price * (1 + settings.slippage_pct if delta_value > 0 else 1 - settings.slippage_pct)
+            slippage_sign = 1 if delta_value > 0 else -1
+            fill_price = price * (1 + slippage_sign * settings.slippage_pct)
             delta_qty = delta_value / fill_price
             cash -= delta_qty * fill_price
             position_qty += delta_qty

@@ -35,7 +35,7 @@ def run_backtest(ohlcv: pd.DataFrame, settings: Settings | None = None) -> Backt
     regimes = engine.classify(ohlcv)
     signals = strategy.generate_signals(ohlcv, regimes)
 
-    for (timestamp, row), signal in zip(ohlcv.iterrows(), signals):
+    for (timestamp, row), signal in zip(ohlcv.iterrows(), signals, strict=True):
         price = float(row["close"])
         decision = risk.validate(signal, current_equity=broker.total_equity(price))
         stop = signal.stop_price if decision.approved else None
