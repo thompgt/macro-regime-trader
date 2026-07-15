@@ -79,10 +79,27 @@ def backtest(ticker: str, start: str, end: str | None, interval: str, walk_forwa
 
 
 @main.command()
-def dashboard() -> None:
+@click.option(
+    "--host", default="localhost", show_default=True, help="Address to bind Streamlit to."
+)
+@click.option("--port", default=8501, show_default=True, help="Port to bind Streamlit to.")
+def dashboard(host: str, port: int) -> None:
     """Launch the Streamlit dashboard."""
     app_path = Path(__file__).parent / "dashboard" / "app.py"
-    subprocess.run([sys.executable, "-m", "streamlit", "run", str(app_path)], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(app_path),
+            "--server.address",
+            host,
+            "--server.port",
+            str(port),
+        ],
+        check=True,
+    )
 
 
 if __name__ == "__main__":
