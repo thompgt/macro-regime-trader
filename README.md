@@ -23,7 +23,7 @@ fixed rule set to every environment.
 This repo splits that idea into four independent, testable stages instead of
 one monolithic "trading bot":
 
-- **Regime detection** is pure classification (momentum + participation), with
+- **Regime detection** is pure classification (trend + volatility state), with
   no notion of positions or money — it can be unit-tested against synthetic
   price paths in isolation.
 - **Strategy sizing** turns a regime label into a target exposure, but never
@@ -43,10 +43,10 @@ its input and output, not how any other stage is implemented.
 
 ```mermaid
 flowchart LR
-    A["Data ingestion\nYFinanceProvider\n(real OHLCV, parquet-cached)"] --> B["Regime detection\nMacroRegimeEngine\nEMA crossover + volume z-score"]
-    B --> C["Strategy logic\nStrategyManager\nDonchian breakout + ATR trailing stop"]
+    A["Data ingestion\nYFinanceProvider\n(real OHLCV, parquet-cached)"] --> B["Regime detection\nMacroRegimeEngine\ntrend + fast re-entry + vol rank"]
+    B --> C["Strategy logic\nStrategyManager\nvol de-risk + gearing"]
     C --> D["Risk gate\nRiskManager\ncircuit breaker + kill switch"]
-    D --> E["Execution\nMockBroker\npaper fills, slippage, ledger"]
+    D --> E["Execution\nMockBroker\nno-trade band, slippage, financing"]
     E --> F["Backtest / reporting\nanalytics, benchmarks,\ndashboard, notebook"]
 
     B -.-> R1["sustained_bull"]
@@ -78,15 +78,17 @@ jupyter notebook notebooks/demo.ipynb
 Example `mrt backtest` output:
 
 ```
+Fetching SPY 1d bars from 2013-07-30 (warmup) / 2015-01-01 (evaluated) to latest...
+Loaded 3266 bars (360 used as warmup).
+
+Mean exposure: 1.18x
+
 model               total_return    sharpe_ratio    max_drawdown        win_rate
 --------------------------------------------------------------------------------
-strategy                  0.1296          0.5763         -0.0527          0.4674
-buy_and_hold              0.6726          0.7380         -0.2450          0.5379
-dma_crossover             0.5478          0.9594         -0.1194          0.4101
+strategy                  3.4576          0.8655         -0.2353          0.5886
+buy_and_hold              3.3546          0.8129         -0.3372          0.5473
+dma_crossover             1.6790          0.8026         -0.2406          0.4365
 ```
-
-(The strategy trades off upside for a much smaller drawdown — that trade-off
-is the point of the risk layer, not a bug.)
 
 ## How it works
 
@@ -98,20 +100,46 @@ YFinanceProvider  →  MacroRegimeEngine  →  StrategyManager  →  RiskManager
 ```
 
 1. **`MacroRegimeEngine`** (`core/macro_engine.py`) — classifies each bar into
-   one of four regimes from EMA momentum crossover + rolling volume z-score:
-   `sustained_bull`, `volatile_distribution`, `structural_bear`,
-   `compressed_liquidity`.
-2. **`StrategyManager`** (`core/strategies.py`) — turns the regime into a
-   target exposure (0-100%), using Donchian-channel breakout confirmation for
-   bull entries and an ATR-based trailing stop that tightens in
-   riskier regimes.
+   one of four regimes (`sustained_bull`, `volatile_distribution`,
+   `structural_bear`, `compressed_liquidity`) along two axes: **trend** (price
+   vs. a 200-bar mean, plus the sign of a fast/slow EMA spread) and
+   **volatility state** (realized vol ranked against its own trailing year).
+   Volume participation is a confirming input only — it refines the quiet/
+   compressed call but never vetoes a trend call.
+
+   Crucially, risk-off (`structural_bear`) requires **both** a broken long-term
+   trend **and** no reclaim of a rising short MA. A long-term trend filter on
+   its own exits after a drawdown has begun and re-enters long after the
+   recovery; the fast re-entry condition is what keeps this from sitting out
+   V-shaped rebounds, and it is where most of the strategy's edge comes from.
+
+2. **`StrategyManager`** (`core/strategies.py`) — sizes the position as
+   `regime weight x volatility de-risk x gearing`. Only `structural_bear` is
+   de-allocated; among risk-on regimes, **volatility does the sizing** rather
+   than a hand-set weight per label. The de-risk scalar,
+   `min(1, target_vol / realized_vol)`, can only ever *cut* exposure — letting
+   it lever up into calm markets is short vol-of-vol and measurably hurt
+   risk-adjusted returns. Gearing (`base_leverage`, default 1.5x) then sets the
+   level of risk, capped by `max_leverage`.
+
 3. **`RiskManager`** (`core/risk_manager.py`) — the only gate before
-   execution. Halts trading for a cooldown period on a >2.5% intraday
-   drawdown (circuit breaker), and permanently locks trading (writes
-   `TRADING_LOCKED.json`) on a >12% peak-to-trough drawdown (kill switch).
+   execution. Halts trading for a cooldown on a >4% single-session drawdown
+   (circuit breaker), and permanently locks trading (writes
+   `TRADING_LOCKED.json`) on a >50% peak-to-trough drawdown (kill switch). The
+   kill switch sits deliberately far beyond the strategy's own expected worst
+   drawdown: the lock is irreversible, so a threshold near normal behaviour
+   turns a survivable decline into a dead account for the rest of the run.
+
 4. **`MockBroker`** (`simulation/mock_broker.py`) — a stateful, long-only
-   paper broker: $100,000 starting balance, 0.04% slippage per trade,
-   ratcheting trailing stops, full ledger + equity curve.
+   paper broker: $100,000 starting balance, 0.04% slippage per trade, interest
+   charged on borrowed cash and yield credited on idle cash (so leverage is
+   never free), full ledger + equity curve. It also owns the **no-trade band**:
+   holding a constant exposure *fraction* would otherwise force a trade every
+   bar as price drifts, bleeding slippage for no change in stance.
+
+Signals are executed with a **one-bar lag** — the signal computed from bar
+`t-1`'s close is what trades at bar `t`'s close — so no decision uses the price
+it trades at.
 
 `backtest/engine.py` wires all four together for a full-sample run, or a
 rolling walk-forward evaluation (`--walk-forward`) that only reports
@@ -128,52 +156,80 @@ slippage, starting balance, walk-forward window sizes, ...) is centralized in
 
 ## Results
 
-The charts below are real output, captured from an executed run of
-`notebooks/demo.ipynb` against real SPY daily OHLCV data pulled through
-`yfinance` (full sample: 2015-01-01 through present). Numbers will differ
-slightly run-to-run as new bars arrive — these are one concrete snapshot, not
-a cherry-picked or fabricated result.
+The charts and tables below are real output from a single run of
+`python scripts/generate_readme_charts.py` against SPY daily OHLCV pulled
+through `yfinance` (evaluated 2015-01-02 → 2026-07-24, 2,906 bars, 91 trades,
+mean exposure 1.18x). Numbers shift slightly run-to-run as new bars arrive —
+this is one concrete snapshot, not a cherry-picked or fabricated result.
 
-**Regime classification over time.** `MacroRegimeEngine` shading SPY's close
-price by detected regime — note how `volatile_distribution` (orange) and
-`compressed_liquidity` (blue) dominate outside of the cleanest 2016-2018 and
-2023-2024 uptrends, while `structural_bear` (red) only lights up around the
-2020 and 2022 drawdowns:
-
-![Regime classification timeline](images/regime_timeline.png)
-
-**Strategy vs. benchmarks.** The regime-gated strategy against plain
-buy-and-hold and a 200-day moving-average crossover, same data, same start
-capital ($100,000):
+**Strategy vs. benchmarks.** The regime strategy against plain buy-and-hold and
+a 200-day moving-average crossover — same data, same $100,000 start, net of
+slippage and financing:
 
 ![Equity curves: strategy vs benchmarks](images/equity_curves.png)
 
 | model | total_return | sharpe_ratio | max_drawdown | win_rate |
 |---|---|---|---|---|
-| macro_regime_strategy | -0.0290 | -0.3612 | -0.0359 | 0.0166 |
-| buy_and_hold | 3.4307 | 0.8229 | -0.3372 | 0.5478 |
-| dma_crossover | 1.7258 | 0.8177 | -0.2406 | 0.4367 |
+| strategy | 3.4576 | 0.8655 | -0.2353 | 0.5886 |
+| buy_and_hold | 3.3546 | 0.8129 | -0.3372 | 0.5473 |
+| dma_crossover | 1.6790 | 0.8026 | -0.2406 | 0.4365 |
 
-In this particular full-sample snapshot the risk layer is extremely
-conservative — it clamps drawdown to a tenth of buy-and-hold's, but at a real
-cost in upside, and the circuit breaker/kill switch logic keeps it flat for
-long stretches. That's the explicit trade-off the risk gate is built to make
-(see `RiskManager` above); tuning how aggressively it trades that off is an
-open area, not a claim that this configuration beats the market.
+The strategy beats buy-and-hold on all three axes that matter here: more total
+return, a better Sharpe, and a drawdown roughly 10 percentage points shallower.
 
-**Full-sample vs. walk-forward out-of-sample.** `--walk-forward` re-fits and
-evaluates on rolling windows so the reported performance only ever reflects
+The mechanism is worth being precise about, because it is easy to overclaim.
+The *edge* is the regime gate's risk-adjusted return — unlevered it earns a
+Sharpe near 0.99 against buy-and-hold's 0.81, largely by not sitting out
+V-shaped recoveries. But it earns that at lower volatility, because it holds
+cash during bear regimes, so unlevered it **trails** on raw return. Gearing
+(1.5x) is what converts the risk-adjusted edge into an absolute-return edge at
+comparable risk. Leverage is a consequence of the edge, not a substitute for
+one — and the volatility de-risk scalar is what makes carrying it defensible.
+
+**What the engine sees, and what it does about it.** Classification over time,
+with the exposure it produced. Risk comes off entirely only in
+`structural_bear`; elsewhere the de-risk scalar trims the position as realized
+volatility rises:
+
+![Regime classification timeline](images/regime_timeline.png)
+
+**Full-sample vs. walk-forward out-of-sample.** `--walk-forward` warms up and
+evaluates on rolling windows so reported performance only ever reflects
 out-of-sample bars — a check against overfitting to the full history:
 
 ![Full-sample vs walk-forward equity](images/walkforward_vs_fullsample.png)
 
-That run produced 45 out-of-sample windows (2,700 bars) with out-of-sample
-metrics of `total_return: 0.0017`, `sharpe_ratio: 0.0474`,
-`max_drawdown: -0.1428`, `win_rate: 0.3435` — materially different from the
-full-sample numbers above, which is exactly why the walk-forward mode exists.
+Over 51 out-of-sample windows the result holds, which is the more meaningful
+version of the claim above:
 
-Reproduce these yourself with `jupyter notebook notebooks/demo.ipynb` (run
-all cells) or `mrt backtest --ticker SPY --start 2015-01-01 --walk-forward`.
+| model | total_return | sharpe_ratio | max_drawdown | win_rate |
+|---|---|---|---|---|
+| strategy_walk_forward | 4.0768 | 0.8808 | -0.2439 | 0.5803 |
+| buy_and_hold | 3.9411 | 0.8467 | -0.3372 | 0.5512 |
+| dma_crossover | 1.6811 | 0.7693 | -0.2406 | 0.4338 |
+
+### Where this does *not* work
+
+The parameters were chosen by checking robustness across SPY, QQQ, IWM, EFA and
+EEM over two disjoint decades (2005-2015 and 2015-2026) rather than by tuning
+to the headline sample, and the honest summary is that the edge lives in
+trend-persistent large-cap equity indices:
+
+- **SPY and QQQ** beat buy-and-hold on return, Sharpe and drawdown in both eras.
+- **EFA** wins in 2005-2015 and on Sharpe/drawdown in 2015-2026.
+- **IWM and EEM** reduce drawdown but **trail on total return** in both eras.
+  Trend following on small caps and emerging markets simply did not pay over
+  these windows, and no amount of sizing fixes a signal that is not there.
+
+Two further caveats worth stating plainly: this is a long-only equity-index
+strategy validated on ~20 years that contained two major crashes and a historic
+bull market, which is a small number of independent regime cycles; and the
+default configuration uses 1.5x gearing, so it is a higher-risk posture than
+buy-and-hold in absolute terms even though its realized drawdown here was
+smaller. `base_leverage=1.0` in `.env` gives the unlevered version.
+
+Reproduce all of the above with `python scripts/generate_readme_charts.py`, or
+`mrt backtest --ticker SPY --start 2015-01-01 [--walk-forward]`.
 
 ## CLI
 
@@ -189,8 +245,9 @@ mrt dashboard [--host 0.0.0.0] [--port 8501]
   ledger.
 - `notebooks/demo.ipynb` is the same walkthrough as a live, re-runnable
   notebook — fetch real data, detect regimes, backtest, compare benchmarks,
-  and run a walk-forward evaluation, with plots at each step. The charts in
-  the [Results](#results) section above were captured from this notebook.
+  and run a walk-forward evaluation, with plots at each step.
+- `scripts/generate_readme_charts.py` regenerates the [Results](#results)
+  charts and metrics tables above from one real run.
 
 ## Docker
 
@@ -207,13 +264,14 @@ src/macro_regime_trader/
   config.py            # centralized, env-overridable settings
   types.py             # shared Regime / Signal / RiskDecision / Fill contracts
   data/                 # DataProvider protocol + real YFinanceProvider
-  core/                 # macro_engine, strategies, risk_manager
+  core/                 # macro_engine, strategies, indicators, risk_manager
   simulation/           # mock_broker
   backtest/             # engine, analytics, benchmarks
   dashboard/            # Streamlit app
   cli.py                # `mrt` entry point
 tests/                  # one test file per module, no network calls
 notebooks/demo.ipynb    # live, executable demo
+scripts/                # regenerate the README charts from a real run
 images/                 # charts referenced from this README
 ```
 
@@ -221,7 +279,7 @@ images/                 # charts referenced from this README
 
 ```bash
 pip install -e ".[dev]"
-pytest -q               # 36 tests, no network required
+pytest -q               # 50 tests, no network required
 ruff format . && ruff check .
 mypy src
 ```
