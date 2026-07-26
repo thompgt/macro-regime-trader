@@ -42,8 +42,12 @@ def test_buy_to_full_exposure_applies_slippage(settings: Settings) -> None:
     # Position should now represent (approximately) full exposure of starting equity.
     assert broker.position_qty == pytest.approx(fill.quantity)
     assert broker.cash < settings.starting_balance
-    # Cash spent should roughly consume the whole starting balance.
-    assert broker.cash == pytest.approx(settings.starting_balance - fill.quantity * fill.price)
+    # Cash spent should consume the whole balance, including the one bar of
+    # yield credited on the starting cash before the trade was placed.
+    assert fill.financing > 0.0
+    opening_cash = settings.starting_balance + fill.financing
+    assert broker.cash == pytest.approx(opening_cash - fill.quantity * fill.price)
+    assert broker.cash == pytest.approx(0.0, abs=1e-6)
 
 
 def test_round_trip_buy_then_sell_costs_slippage(settings: Settings) -> None:
@@ -183,6 +187,8 @@ def test_ledger_and_equity_curve_grow_one_per_step(settings: Settings) -> None:
         "quantity",
         "price",
         "slippage_cost",
+        "financing",
+        "reason",
         "equity_after",
     ]
     assert len(ledger) == len(steps)

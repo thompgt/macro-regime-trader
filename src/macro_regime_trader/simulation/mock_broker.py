@@ -1,10 +1,15 @@
 """Stateful brokerage simulation.
 
-Simulates a long-only (0%-100% exposure) trading account with:
+Simulates a long-only trading account with:
 
 - A virtual starting cash balance (``Settings.starting_balance``).
 - Per-trade slippage (``Settings.slippage_pct``) applied against the trader.
 - Dynamic, ratchet-only trailing stop-loss processing.
+- Financing: interest charged on borrowed cash when approved exposure exceeds
+  1x, and yield credited on idle cash, so leverage carries a real cost.
+
+Exposure is bounded below at 0 (no shorting) but may exceed 1x; the strategy
+layer caps it at ``Settings.max_leverage``.
 
 Each call to :meth:`MockBroker.step` represents one bar of OHLCV data
 (only close-level granularity is assumed, so ``price`` doubles as both the
@@ -13,7 +18,7 @@ bar's close and the price at which any stop-loss breach is checked/filled).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pandas as pd
 
@@ -80,11 +85,22 @@ class MockBroker:
                     "quantity": f.quantity,
                     "price": f.price,
                     "slippage_cost": f.slippage_cost,
+                    "financing": f.financing,
+                    "reason": f.reason,
                     "equity_after": equity,
                 }
                 for f, equity in zip(self._ledger, self._equity_curve, strict=True)
             ],
-            columns=["timestamp", "side", "quantity", "price", "slippage_cost", "equity_after"],
+            columns=[
+                "timestamp",
+                "side",
+                "quantity",
+                "price",
+                "slippage_cost",
+                "financing",
+                "reason",
+                "equity_after",
+            ],
         )
 
     # -- core simulation ------------------------------------------------
@@ -98,11 +114,15 @@ class MockBroker:
     ) -> Fill:
         """Advance the simulation by one bar and return the resulting Fill."""
 
+        # 0. Accrue one bar of financing on the balance carried in from the
+        #    previous bar, before any trading changes it.
+        financing = self._accrue_financing()
+
         fill: Fill | None = None
 
         # 1. Trailing stop check takes priority over rebalancing.
         if self._stop_price is not None and self._position_qty > 0.0 and price <= self._stop_price:
-            fill = self._liquidate(timestamp, price)
+            fill = self._liquidate(timestamp, price, reason="stop_loss")
             self._stop_price = None
         else:
             fill = self._rebalance(timestamp, price, approved_exposure)
@@ -112,13 +132,33 @@ class MockBroker:
                 current = self._stop_price if self._stop_price is not None else float("-inf")
                 self._stop_price = max(current, stop_price)
 
+        fill = replace(fill, financing=financing)
         self._ledger.append(fill)
         self._equity_curve.append(self.total_equity(price))
         return fill
 
     # -- internals -------------------------------------------------------
 
-    def _liquidate(self, timestamp: object, price: float) -> Fill:
+    def _accrue_financing(self) -> float:
+        """Charge interest on borrowed cash, credit yield on idle cash.
+
+        Returns the (signed) amount applied: negative is a cost. Without this,
+        leverage would be free and any exposure above 1x would look strictly
+        better than it is.
+        """
+        days = self.settings.trading_days_per_year
+        if days <= 0:
+            return 0.0
+
+        if self._cash < 0.0:
+            amount = self._cash * self.settings.margin_interest_rate / days
+        else:
+            amount = self._cash * self.settings.cash_yield_rate / days
+
+        self._cash += amount
+        return amount
+
+    def _liquidate(self, timestamp: object, price: float, reason: str = "") -> Fill:
         qty = self._position_qty
         fill_price = price * (1 - self.settings.slippage_pct)
         proceeds = qty * fill_price
@@ -131,6 +171,7 @@ class MockBroker:
             quantity=qty,
             price=fill_price,
             slippage_cost=slippage_cost,
+            reason=reason,
         )
 
     def _rebalance(self, timestamp: object, price: float, approved_exposure: float) -> Fill:
@@ -139,6 +180,23 @@ class MockBroker:
         target_value = approved_exposure * equity
         delta_value = target_value - current_value
 
+        # No-trade band. Holding a constant *exposure fraction* would otherwise
+        # require trading every single bar, since the position's value drifts
+        # with price even when the target is unchanged -- which bleeds slippage
+        # continuously for no change in stance. Only rebalance once actual
+        # exposure has drifted from target by more than the band. Full exits are
+        # always executed: standing down is never deferred for tidiness.
+        band = self.settings.rebalance_band
+        if (
+            approved_exposure > 0.0
+            and equity > 0.0
+            and band > 0.0
+            and abs(delta_value) / equity < band
+        ):
+            return Fill(
+                timestamp=timestamp, side="hold", quantity=0.0, price=price, slippage_cost=0.0
+            )
+
         if not price or abs(delta_value) / price < 1e-9:
             return Fill(
                 timestamp=timestamp, side="hold", quantity=0.0, price=price, slippage_cost=0.0
@@ -146,8 +204,9 @@ class MockBroker:
 
         if delta_value > 0:
             # Size the buy off the slippage-adjusted fill price so the dollar
-            # cost equals delta_value exactly -- since target_value <= equity,
-            # this guarantees cash can never go negative from slippage drag.
+            # cost equals delta_value exactly. When approved_exposure exceeds
+            # 1.0 the resulting cash balance goes negative -- that is the
+            # borrowed margin, and `_accrue_financing` charges interest on it.
             fill_price = price * (1 + self.settings.slippage_pct)
             delta_qty = delta_value / fill_price
             cost = delta_qty * fill_price

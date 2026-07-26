@@ -37,7 +37,8 @@ def manager() -> StrategyManager:
     return StrategyManager(get_settings())
 
 
-def test_exposure_ordering(manager: StrategyManager) -> None:
+def test_only_structural_bear_is_deallocated(manager: StrategyManager) -> None:
+    """Sizing is risk-on/risk-off: every non-bear regime carries the book."""
     ohlcv = _make_ohlcv()
 
     bull = manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL)
@@ -46,17 +47,43 @@ def test_exposure_ordering(manager: StrategyManager) -> None:
     bear = manager.generate_signal(ohlcv, Regime.STRUCTURAL_BEAR)
 
     assert bear.target_exposure == 0.0
-    assert bull.target_exposure > volatile.target_exposure
-    assert bull.target_exposure > compressed.target_exposure
-    assert volatile.target_exposure > bear.target_exposure
-    assert compressed.target_exposure > bear.target_exposure
+    for signal in (bull, volatile, compressed):
+        assert signal.target_exposure > 0.0
 
 
-def test_breakout_increases_bull_exposure(manager: StrategyManager) -> None:
+def test_exposure_is_geared_and_capped(manager: StrategyManager) -> None:
+    settings = get_settings()
     ohlcv = _make_ohlcv()
 
+    bull = manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL)
+
+    # This synthetic series is quiet, so the de-risk scalar saturates at 1.0 and
+    # exposure lands on the full gearing level rather than being cut.
+    assert bull.target_exposure == pytest.approx(settings.base_leverage)
+    assert bull.target_exposure <= settings.max_leverage
+
+
+def test_high_volatility_derisks_but_never_levers_up() -> None:
+    """The vol scalar may only ever cut exposure, never raise it."""
+    settings = get_settings().model_copy(update={"target_annual_vol": 0.02})
+    manager = StrategyManager(settings)
+    ohlcv = _make_ohlcv()
+
+    signal = manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL)
+
+    # Target vol far below realized vol => scalar < 1 => geared exposure is cut.
+    assert 0.0 < signal.target_exposure < settings.base_leverage
+
+    calm = get_settings().model_copy(update={"target_annual_vol": 10.0})
+    calm_signal = StrategyManager(calm).generate_signal(ohlcv, Regime.SUSTAINED_BULL)
+    # An absurdly high target must not lever beyond base_leverage.
+    assert calm_signal.target_exposure == pytest.approx(calm.base_leverage)
+
+
+def test_breakout_is_reported_but_does_not_change_size(manager: StrategyManager) -> None:
+    """Donchian breakout is diagnostic only; it no longer scales the position."""
+    ohlcv = _make_ohlcv()
     non_breakout = manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL)
-    assert "no_breakout" in non_breakout.reason
 
     # Force the final bar to break decisively above the Donchian upper channel.
     breakout_ohlcv = ohlcv.copy()
@@ -70,27 +97,38 @@ def test_breakout_increases_bull_exposure(manager: StrategyManager) -> None:
     breakout_signal = manager.generate_signal(breakout_ohlcv, Regime.SUSTAINED_BULL)
 
     assert "donchian_breakout" in breakout_signal.reason
-    assert breakout_signal.target_exposure > non_breakout.target_exposure
+    assert "donchian_breakout" not in non_breakout.reason
 
 
-def test_stop_price_set_for_nonzero_exposure(manager: StrategyManager) -> None:
+def test_no_stop_price_when_atr_stop_disabled(manager: StrategyManager) -> None:
+    """The ATR trailing stop is off by default."""
+    assert get_settings().use_atr_stop is False
     ohlcv = _make_ohlcv()
 
-    bull = manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL)
-    volatile = manager.generate_signal(ohlcv, Regime.VOLATILE_DISTRIBUTION)
-    compressed = manager.generate_signal(ohlcv, Regime.COMPRESSED_LIQUIDITY)
+    assert manager.generate_signal(ohlcv, Regime.SUSTAINED_BULL).stop_price is None
 
+
+def test_stop_price_set_below_close_when_enabled() -> None:
+    settings = get_settings().model_copy(update={"use_atr_stop": True})
+    manager = StrategyManager(settings)
+    ohlcv = _make_ohlcv()
     latest_close = float(ohlcv["close"].iloc[-1])
 
-    for signal in (bull, volatile, compressed):
+    for regime in (
+        Regime.SUSTAINED_BULL,
+        Regime.VOLATILE_DISTRIBUTION,
+        Regime.COMPRESSED_LIQUIDITY,
+    ):
+        signal = manager.generate_signal(ohlcv, regime)
         assert signal.target_exposure > 0.0
         assert signal.stop_price is not None
         assert signal.stop_price < latest_close
 
 
-def test_stop_price_none_for_zero_exposure(manager: StrategyManager) -> None:
+def test_stop_price_none_for_zero_exposure() -> None:
+    settings = get_settings().model_copy(update={"use_atr_stop": True})
     ohlcv = _make_ohlcv()
-    bear = manager.generate_signal(ohlcv, Regime.STRUCTURAL_BEAR)
+    bear = StrategyManager(settings).generate_signal(ohlcv, Regime.STRUCTURAL_BEAR)
 
     assert bear.target_exposure == 0.0
     assert bear.stop_price is None

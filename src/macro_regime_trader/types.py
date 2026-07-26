@@ -47,3 +47,9 @@ class Fill:
     quantity: float
     price: float
     slippage_cost: float
+    # Why this fill happened. "stop_loss" marks a forced liquidation, which
+    # callers use to trigger a re-entry cooldown.
+    reason: str = ""
+    # Financing accrued on this bar: interest charged on borrowed cash when
+    # exposure exceeds 1x, or yield credited on idle cash. Negative = a cost.
+    financing: float = 0.0

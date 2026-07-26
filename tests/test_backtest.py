@@ -11,7 +11,9 @@ from macro_regime_trader.backtest.analytics import (
 )
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
 from macro_regime_trader.backtest.engine import (
+    rebase,
     run_backtest,
+    run_backtest_from,
     run_walk_forward_backtest,
     walk_forward_windows,
 )
@@ -103,3 +105,84 @@ def test_dma_crossover_equity_is_full_length_and_positive(settings):
     equity = dma_crossover_equity(ohlcv, settings)
     assert len(equity) == len(ohlcv)
     assert (equity > 0).all()
+
+
+def test_execution_is_lagged_one_bar(settings):
+    """The first bar must trade flat: its signal is not yet actionable."""
+    ohlcv = _synthetic_ohlcv(120, seed=5)
+    result = run_backtest(ohlcv, settings)
+
+    assert result.exposure.iloc[0] == 0.0
+    # Flat, so equity moves only by the one bar of yield credited on idle cash.
+    one_bar_of_yield = settings.starting_balance * (
+        settings.cash_yield_rate / settings.trading_days_per_year
+    )
+    assert result.equity_curve.iloc[0] == pytest.approx(
+        settings.starting_balance + one_bar_of_yield
+    )
+
+
+def test_run_backtest_from_rebases_and_restricts_window(settings):
+    ohlcv = _synthetic_ohlcv(300, seed=6)
+    evaluation_start = ohlcv.index[150]
+
+    result = run_backtest_from(ohlcv, evaluation_start, settings)
+
+    assert result.equity_curve.index[0] == evaluation_start
+    assert len(result.equity_curve) == 150
+    # Rebased so it is directly comparable to a benchmark over the same window.
+    assert result.equity_curve.iloc[0] == pytest.approx(settings.starting_balance)
+    assert result.regimes.index.equals(result.equity_curve.index)
+    assert result.exposure.index.equals(result.equity_curve.index)
+
+
+def test_run_backtest_from_uses_warmup_to_avoid_starting_flat(settings):
+    """Warmup bars should leave the strategy already positioned on bar one."""
+    ohlcv = _synthetic_ohlcv(300, seed=7)
+
+    cold = run_backtest(ohlcv, settings)
+    warm = run_backtest_from(ohlcv, ohlcv.index[150], settings)
+
+    assert cold.exposure.iloc[0] == 0.0
+    assert warm.exposure.iloc[0] > 0.0
+
+
+def test_run_backtest_from_raises_when_window_empty(settings):
+    ohlcv = _synthetic_ohlcv(50, seed=8)
+    with pytest.raises(ValueError, match="evaluation_start"):
+        run_backtest_from(ohlcv, pd.Timestamp("2099-01-01"), settings)
+
+
+def test_rebase_scales_curve_to_starting_balance():
+    equity = pd.Series([250.0, 275.0, 300.0])
+    rebased = rebase(equity, 100.0)
+    assert rebased.iloc[0] == pytest.approx(100.0)
+    # Shape is preserved; only the level changes.
+    assert (rebased / rebased.iloc[0]).tolist() == pytest.approx((equity / equity.iloc[0]).tolist())
+
+
+def test_no_trade_band_suppresses_churn_without_changing_stance():
+    """A wide band should cut trade count sharply, not the exposure level."""
+    ohlcv = _synthetic_ohlcv(400, seed=9)
+    base = dict(ema_fast=5, ema_slow=10, donchian_window=10, atr_window=5)
+
+    tight = run_backtest(ohlcv, Settings(rebalance_band=0.0, **base))
+    wide = run_backtest(ohlcv, Settings(rebalance_band=0.25, **base))
+
+    tight_trades = int((tight.ledger["side"] != "hold").sum())
+    wide_trades = int((wide.ledger["side"] != "hold").sum())
+
+    assert wide_trades < tight_trades / 2
+    assert wide.exposure.mean() == pytest.approx(tight.exposure.mean(), abs=0.15)
+
+
+def test_exposure_series_reports_actual_not_target():
+    """Exposure must reflect what was held, including deferred rebalances."""
+    ohlcv = _synthetic_ohlcv(200, seed=10)
+    result = run_backtest(
+        ohlcv, Settings(rebalance_band=0.5, ema_fast=5, ema_slow=10, atr_window=5)
+    )
+    # With a very wide band the held exposure drifts away from any single
+    # target level, so the series must not be piecewise-constant.
+    held = result.exposure[result.exposure > 0]
+    assert held.nunique() > 5

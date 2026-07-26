@@ -11,7 +11,7 @@ import pandas as pd
 
 from macro_regime_trader.backtest.analytics import compute_metrics
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
-from macro_regime_trader.backtest.engine import run_backtest, run_walk_forward_backtest
+from macro_regime_trader.backtest.engine import run_backtest_from, run_walk_forward_backtest
 from macro_regime_trader.config import get_settings
 from macro_regime_trader.data.yfinance_provider import YFinanceProvider
 from macro_regime_trader.logging_config import configure_logging, get_logger
@@ -51,9 +51,19 @@ def backtest(ticker: str, start: str, end: str | None, interval: str, walk_forwa
     settings = get_settings()
     provider = YFinanceProvider(cache_dir=settings.data_cache_dir)
 
-    click.echo(f"Fetching {ticker} {interval} bars from {start} to {end or 'latest'}...")
-    ohlcv = provider.get_ohlcv(ticker, start=start, end=end, interval=interval)
-    click.echo(f"Loaded {len(ohlcv)} bars.\n")
+    # Fetch extra history before `start` so indicators are already warm on the
+    # first evaluated bar; the pre-start bars are never reported on.
+    evaluation_start = pd.Timestamp(start)
+    fetch_start = evaluation_start - pd.Timedelta(days=settings.warmup_calendar_days)
+    click.echo(
+        f"Fetching {ticker} {interval} bars from {fetch_start.date()} "
+        f"(warmup) / {evaluation_start.date()} (evaluated) to {end or 'latest'}..."
+    )
+    ohlcv = provider.get_ohlcv(
+        ticker, start=fetch_start.strftime("%Y-%m-%d"), end=end, interval=interval
+    )
+    warmup_bars = int((ohlcv.index < evaluation_start).sum())
+    click.echo(f"Loaded {len(ohlcv)} bars ({warmup_bars} used as warmup).\n")
 
     if walk_forward:
         window_results = run_walk_forward_backtest(ohlcv, settings)
@@ -66,7 +76,9 @@ def backtest(ticker: str, start: str, end: str | None, interval: str, walk_forwa
         strategy_equity = pd.concat([r.equity_curve for r in window_results]).sort_index()
         strategy_equity = strategy_equity[~strategy_equity.index.duplicated(keep="first")]
     else:
-        strategy_equity = run_backtest(ohlcv, settings).equity_curve
+        result = run_backtest_from(ohlcv, evaluation_start, settings)
+        strategy_equity = result.equity_curve
+        click.echo(f"Mean exposure: {result.exposure.mean():.2f}x\n")
 
     benchmark_index = strategy_equity.index
     bench_ohlcv = ohlcv.loc[benchmark_index]
