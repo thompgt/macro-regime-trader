@@ -211,22 +211,45 @@ version of the claim above:
 ### Where this does *not* work
 
 The parameters were chosen by checking robustness across SPY, QQQ, IWM, EFA and
-EEM over two disjoint decades (2005-2015 and 2015-2026) rather than by tuning
-to the headline sample, and the honest summary is that the edge lives in
-trend-persistent large-cap equity indices:
+EEM over two disjoint decades (2005-2015 and 2015-2026) rather than by tuning to
+the headline sample. Across those ten ticker-decades the strategy wins **19 of 30**
+individual comparisons. The full grid, so the failures are visible:
 
-- **SPY and QQQ** beat buy-and-hold on return, Sharpe and drawdown in both eras.
-- **EFA** wins in 2005-2015 and on Sharpe/drawdown in 2015-2026.
-- **IWM and EEM** reduce drawdown but **trail on total return** in both eras.
-  Trend following on small caps and emerging markets simply did not pay over
-  these windows, and no amount of sizing fixes a signal that is not there.
+| era | ticker | return | vs B&H | Sharpe | vs B&H | max DD | vs B&H | wins |
+|---|---|---|---|---|---|---|---|---|
+| 2015-2026 | SPY | 3.458 | 3.355 | 0.866 | 0.813 | -0.235 | -0.337 | **3** |
+| 2015-2026 | QQQ | 5.582 | 6.236 | 0.873 | 0.892 | -0.312 | -0.351 | 1 |
+| 2015-2026 | IWM | 1.920 | 1.839 | 0.566 | 0.517 | -0.298 | -0.411 | **3** |
+| 2015-2026 | EFA | 1.385 | 1.399 | 0.528 | 0.526 | -0.342 | -0.342 | 1 |
+| 2015-2026 | EEM | 0.771 | 1.097 | 0.354 | 0.412 | -0.449 | -0.398 | 0 |
+| 2005-2015 | SPY | 1.287 | 1.092 | 0.592 | 0.465 | -0.348 | -0.552 | **3** |
+| 2005-2015 | QQQ | 2.449 | 1.821 | 0.753 | 0.595 | -0.288 | -0.534 | **3** |
+| 2005-2015 | IWM | 0.402 | 1.145 | 0.269 | 0.425 | -0.374 | -0.586 | 1 |
+| 2005-2015 | EFA | 1.318 | 0.519 | 0.546 | 0.293 | -0.233 | -0.610 | **3** |
+| 2005-2015 | EEM | 0.736 | 1.112 | 0.363 | 0.389 | -0.349 | -0.664 | 1 |
 
-Two further caveats worth stating plainly: this is a long-only equity-index
-strategy validated on ~20 years that contained two major crashes and a historic
-bull market, which is a small number of independent regime cycles; and the
-default configuration uses 1.5x gearing, so it is a higher-risk posture than
-buy-and-hold in absolute terms even though its realized drawdown here was
-smaller. `base_leverage=1.0` in `.env` gives the unlevered version.
+Read that honestly rather than as "this beats the market":
+
+- **SPY wins all three measures in both decades** — it is the asset these
+  defaults were validated for, and the headline above rests on it.
+- **Drawdown reduction is the reliable effect**, holding in 8 of 10
+  ticker-decades, usually by a wide margin.
+- **Converting that into higher return is not reliable.** QQQ since 2015 trails
+  on return and Sharpe, because an almost uninterrupted uptrend is exactly where
+  a defensive filter can only cost you. IWM in 2005-2015 trails for the opposite
+  reason: repeated whipsaws with no persistent trend.
+- **EEM since 2015 is the honest worst case** — worse on all three, *including a
+  deeper drawdown than buy-and-hold*. Gearing amplified an asset where the trend
+  signal added nothing, which is precisely the failure mode leverage creates.
+
+Two further caveats worth stating plainly. This is a long-only equity-index
+strategy validated on ~20 years containing two major crashes and one historic
+bull market — a small number of genuinely *independent* regime cycles, whatever
+the bar count suggests. And the default configuration uses 1.5x gearing, so it is
+a higher-risk posture than buy-and-hold in absolute terms even where its realized
+drawdown was smaller; `MRT_BASE_LEVERAGE=1.0` gives the unlevered version, which
+on SPY earns a *better* Sharpe (0.95) and a shallower drawdown (-0.17) but returns
+2.20 against buy-and-hold's 3.35.
 
 Reproduce all of the above with `python scripts/generate_readme_charts.py`, or
 `mrt backtest --ticker SPY --start 2015-01-01 [--walk-forward]`.
