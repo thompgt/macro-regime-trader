@@ -11,7 +11,11 @@ import pandas as pd
 
 from macro_regime_trader.backtest.analytics import compute_metrics
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
-from macro_regime_trader.backtest.engine import run_backtest_from, run_walk_forward_backtest
+from macro_regime_trader.backtest.engine import (
+    chain_walk_forward_equity,
+    run_backtest_from,
+    run_walk_forward_backtest,
+)
 from macro_regime_trader.config import get_settings
 from macro_regime_trader.data.yfinance_provider import YFinanceProvider
 from macro_regime_trader.logging_config import configure_logging, get_logger
@@ -73,8 +77,8 @@ def backtest(ticker: str, start: str, end: str | None, interval: str, walk_forwa
                 f"(need >= {settings.train_window + settings.test_window})."
             )
             sys.exit(1)
-        strategy_equity = pd.concat([r.equity_curve for r in window_results]).sort_index()
-        strategy_equity = strategy_equity[~strategy_equity.index.duplicated(keep="first")]
+        strategy_equity = chain_walk_forward_equity(window_results, settings.starting_balance)
+        click.echo(f"{len(window_results)} out-of-sample windows chained.\n")
     else:
         result = run_backtest_from(ohlcv, evaluation_start, settings)
         strategy_equity = result.equity_curve

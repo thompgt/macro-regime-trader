@@ -11,6 +11,8 @@ from macro_regime_trader.backtest.analytics import (
 )
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
 from macro_regime_trader.backtest.engine import (
+    BacktestResult,
+    chain_walk_forward_equity,
     rebase,
     run_backtest,
     run_backtest_from,
@@ -67,6 +69,54 @@ def test_run_walk_forward_backtest_covers_oos_segments_only(settings):
     total_oos_bars = sum(len(r.equity_curve) for r in results)
     assert total_oos_bars <= len(ohlcv)
     assert all(len(r.equity_curve) == settings.test_window for r in results)
+
+
+def test_chain_walk_forward_equity_compounds_across_windows():
+    """Windows must be linked by return, not concatenated by level."""
+    index_a = pd.date_range("2020-01-01", periods=3, freq="B")
+    index_b = pd.date_range("2020-01-06", periods=3, freq="B")
+    # Two independent windows, each restarting at 100 and each gaining 10%.
+    results = [
+        BacktestResult(
+            equity_curve=pd.Series([100.0, 105.0, 110.0], index=index_a),
+            regimes=pd.Series([None] * 3, index=index_a),
+            ledger=pd.DataFrame(),
+            exposure=pd.Series([0.0] * 3, index=index_a),
+        ),
+        BacktestResult(
+            equity_curve=pd.Series([100.0, 105.0, 110.0], index=index_b),
+            regimes=pd.Series([None] * 3, index=index_b),
+            ledger=pd.DataFrame(),
+            exposure=pd.Series([0.0] * 3, index=index_b),
+        ),
+    ]
+
+    chained = chain_walk_forward_equity(results, starting_balance=100.0)
+
+    assert len(chained) == 6
+    assert chained.iloc[0] == pytest.approx(100.0)
+    # 1.10 * 1.10 -- compounded, not a jump back down to 100 at the seam.
+    assert chained.iloc[-1] == pytest.approx(121.0)
+    assert chained.is_monotonic_increasing
+
+
+def test_chain_walk_forward_equity_handles_empty_input():
+    assert chain_walk_forward_equity([], starting_balance=100.0).empty
+
+
+def test_walk_forward_chaining_avoids_seam_discontinuities(settings):
+    """The chained curve must not contain artificial jumps at window seams."""
+    ohlcv = _synthetic_ohlcv(400, seed=11)
+    results = run_walk_forward_backtest(ohlcv, settings)
+    assert len(results) > 2
+
+    chained = chain_walk_forward_equity(results, settings.starting_balance)
+    naive = pd.concat([r.equity_curve for r in results]).sort_index()
+    naive = naive[~naive.index.duplicated(keep="first")]
+
+    # The naive concatenation resets to the starting balance at every seam,
+    # producing far larger single-bar moves than the strategy ever takes.
+    assert chained.pct_change().abs().max() < naive.pct_change().abs().max()
 
 
 def test_analytics_functions_on_known_equity_curve():

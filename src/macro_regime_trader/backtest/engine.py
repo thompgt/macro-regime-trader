@@ -137,6 +137,38 @@ def run_backtest_from(
     )
 
 
+def chain_walk_forward_equity(results: list[BacktestResult], starting_balance: float) -> pd.Series:
+    """Link per-window out-of-sample equity curves into one continuous curve.
+
+    Each walk-forward window is an *independent* simulation that restarts the
+    broker at ``starting_balance``, so the windows' absolute equity levels are
+    not comparable. Concatenating them directly injects an artificial jump at
+    every window boundary, which corrupts the return series precisely at the
+    seams -- the reported total return then reflects those discontinuities
+    rather than the strategy. Compounding each window's *within-window* returns
+    onto a running balance is the correct way to splice them.
+    """
+    if not results:
+        return pd.Series(dtype=float, name="strategy")
+
+    segments: list[pd.Series] = []
+    level = starting_balance
+    for result in results:
+        curve = result.equity_curve
+        if curve.empty:
+            continue
+        # Within-window growth factors, rebased so the window starts at `level`.
+        segment = curve / curve.iloc[0] * level
+        segments.append(segment)
+        level = float(segment.iloc[-1])
+
+    if not segments:
+        return pd.Series(dtype=float, name="strategy")
+
+    chained = pd.concat(segments).sort_index()
+    return chained[~chained.index.duplicated(keep="first")].rename("strategy")
+
+
 def walk_forward_windows(
     n_bars: int, train_window: int, test_window: int
 ) -> list[tuple[slice, slice]]:
