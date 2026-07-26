@@ -20,16 +20,9 @@ import streamlit as st
 
 from macro_regime_trader.backtest.analytics import compute_metrics
 from macro_regime_trader.backtest.benchmarks import buy_and_hold_equity, dma_crossover_equity
-from macro_regime_trader.backtest.engine import BacktestResult, run_backtest
+from macro_regime_trader.backtest.engine import BacktestResult, run_backtest_from
 from macro_regime_trader.config import get_settings
 from macro_regime_trader.data.yfinance_provider import YFinanceProvider
-
-REGIME_ORDER = [
-    "structural_bear",
-    "compressed_liquidity",
-    "volatile_distribution",
-    "sustained_bull",
-]
 
 REGIME_LABELS = {
     "sustained_bull": "Sustained Bull",
@@ -38,11 +31,21 @@ REGIME_LABELS = {
     "compressed_liquidity": "Compressed Liquidity",
 }
 
+# Categorical palette validated for colorblind separation (worst all-pairs CVD
+# deltaE 13.0). `sustained_bull` is deliberately blue rather than green: a
+# green/red bull/bear pair is the most important distinction on this page and it
+# fails protanopia separation, so hue must not carry that contrast alone.
 REGIME_COLORS = {
-    "sustained_bull": "#1a9e46",
-    "volatile_distribution": "#e0a30f",
-    "structural_bear": "#c0392b",
-    "compressed_liquidity": "#3477a6",
+    "sustained_bull": "#2a78d6",
+    "volatile_distribution": "#eda100",
+    "compressed_liquidity": "#4a3aa7",
+    "structural_bear": "#e34948",
+}
+
+SERIES_COLORS = {
+    "strategy": "#2a78d6",
+    "buy_and_hold": "#eb6834",
+    "dma_crossover": "#1baf7a",
 }
 
 
@@ -52,12 +55,26 @@ def fetch_and_run(
     end: str | None,
     interval: str,
 ) -> tuple[pd.DataFrame, BacktestResult]:
-    """Fetch OHLCV data and run the full backtest. Raises on bad input/no data."""
+    """Fetch OHLCV data and run the backtest over an indicator-warmed window.
+
+    Extra history is fetched *before* ``start`` and used only to warm up
+    indicators, so the reported window compares a fully-warmed strategy against
+    a fully-invested benchmark. Without it the strategy is unclassified and flat
+    for its first ~100 bars and looks worse than it is.
+    """
     settings = get_settings()
     provider = YFinanceProvider(cache_dir=settings.data_cache_dir)
-    ohlcv = provider.get_ohlcv(ticker, start=start, end=end, interval=interval)
-    result = run_backtest(ohlcv, settings)
-    return ohlcv, result
+
+    evaluation_start = pd.Timestamp(start)
+    fetch_start = evaluation_start - pd.Timedelta(days=settings.warmup_calendar_days)
+    ohlcv = provider.get_ohlcv(
+        ticker, start=fetch_start.strftime("%Y-%m-%d"), end=end, interval=interval
+    )
+    if ohlcv.empty:
+        return ohlcv, None  # type: ignore[return-value]
+
+    result = run_backtest_from(ohlcv, evaluation_start, settings)
+    return ohlcv.loc[result.equity_curve.index], result
 
 
 def build_equity_comparison(result: BacktestResult, ohlcv: pd.DataFrame, settings) -> pd.DataFrame:
@@ -72,19 +89,6 @@ def build_equity_comparison(result: BacktestResult, ohlcv: pd.DataFrame, setting
         }
     )
     return combined
-
-
-def regime_series_to_numeric(regimes: pd.Series) -> pd.Series:
-    """Map Regime string values (or None during warmup) to an integer code for plotting."""
-    mapping = {name: idx for idx, name in enumerate(REGIME_ORDER)}
-
-    def _to_code(value: object) -> float | None:
-        if value is None:
-            return None
-        key = value.value if hasattr(value, "value") else str(value)
-        return mapping.get(key)
-
-    return regimes.map(_to_code).rename("regime_code")
 
 
 def latest_regime(regimes: pd.Series) -> str | None:
@@ -102,6 +106,56 @@ def render_metrics(label: str, metrics: dict[str, float]) -> None:
     cols[1].metric(f"{label} Sharpe", f"{metrics['sharpe_ratio']:.2f}")
     cols[2].metric(f"{label} Max Drawdown", f"{metrics['max_drawdown'] * 100:.2f}%")
     cols[3].metric(f"{label} Win Rate", f"{metrics['win_rate'] * 100:.1f}%")
+
+
+def render_headline_metrics(strategy: dict[str, float], benchmark: dict[str, float]) -> None:
+    """Strategy metrics with the buy-and-hold gap shown as the delta.
+
+    The whole question this page answers is "did it beat buy and hold?", so the
+    comparison belongs in the primary tiles rather than behind an expander.
+    Drawdown deltas are inverted (`delta_color`) because a shallower drawdown is
+    an improvement even though the number is larger.
+    """
+    cols = st.columns(4)
+    cols[0].metric(
+        "Total Return",
+        f"{strategy['total_return'] * 100:.2f}%",
+        f"{(strategy['total_return'] - benchmark['total_return']) * 100:+.2f} pts vs B&H",
+    )
+    cols[1].metric(
+        "Sharpe",
+        f"{strategy['sharpe_ratio']:.2f}",
+        f"{strategy['sharpe_ratio'] - benchmark['sharpe_ratio']:+.2f} vs B&H",
+    )
+    cols[2].metric(
+        "Max Drawdown",
+        f"{strategy['max_drawdown'] * 100:.2f}%",
+        f"{(strategy['max_drawdown'] - benchmark['max_drawdown']) * 100:+.2f} pts vs B&H",
+    )
+    cols[3].metric(
+        "Win Rate",
+        f"{strategy['win_rate'] * 100:.1f}%",
+        f"{(strategy['win_rate'] - benchmark['win_rate']) * 100:+.1f} pts vs B&H",
+    )
+
+
+def drawdown_frame(equity_comparison: pd.DataFrame) -> pd.DataFrame:
+    """Drawdown-from-running-peak for each equity curve."""
+    return equity_comparison.apply(lambda col: col / col.cummax() - 1.0)
+
+
+def metrics_table(rows: dict[str, dict[str, float]]) -> pd.DataFrame:
+    """Side-by-side metrics for every model, as a readable table."""
+    frame = pd.DataFrame(rows).T
+    frame.index.name = "model"
+    return frame.rename(
+        columns={
+            "total_return": "Total return",
+            "sharpe_ratio": "Sharpe",
+            "max_drawdown": "Max drawdown",
+            "win_rate": "Win rate",
+        }
+    ).round(4)
 
 
 def main() -> None:
@@ -153,15 +207,58 @@ def main() -> None:
     bh_metrics = compute_metrics(equity_comparison["buy_and_hold"].dropna())
     dma_metrics = compute_metrics(equity_comparison["dma_crossover"].dropna())
 
-    st.subheader("Strategy Performance")
-    render_metrics("Strategy", strategy_metrics)
+    beats = (
+        strategy_metrics["total_return"] > bh_metrics["total_return"],
+        strategy_metrics["sharpe_ratio"] > bh_metrics["sharpe_ratio"],
+        strategy_metrics["max_drawdown"] > bh_metrics["max_drawdown"],
+    )
 
-    with st.expander("Show buy & hold / DMA-crossover benchmark metrics"):
-        render_metrics("Buy & Hold", bh_metrics)
-        render_metrics("DMA Crossover", dma_metrics)
+    st.subheader("Strategy vs. Buy & Hold")
+    st.caption(
+        f"Evaluated {len(result.equity_curve):,} bars, "
+        f"{result.equity_curve.index[0].date()} to {result.equity_curve.index[-1].date()} - "
+        f"mean exposure {result.exposure.mean():.2f}x, "
+        f"{int((result.ledger['side'] != 'hold').sum())} trades. "
+        "Indicators were warmed on history before the start date, so both models "
+        "are live from the first bar shown."
+    )
+    render_headline_metrics(strategy_metrics, bh_metrics)
+
+    won = sum(beats)
+    summary = f"Beats buy & hold on {won} of 3 measures (return, Sharpe, drawdown)."
+    if won == 3:
+        st.success(summary)
+    elif won == 0:
+        st.error(summary)
+    else:
+        st.warning(summary)
 
     st.subheader("Equity Curve: Strategy vs. Benchmarks")
-    st.line_chart(equity_comparison)
+    st.line_chart(equity_comparison, color=[SERIES_COLORS[c] for c in equity_comparison.columns])
+
+    st.subheader("Drawdown")
+    st.caption("Decline from each model's own running peak - closer to zero is better.")
+    drawdowns = drawdown_frame(equity_comparison)
+    st.line_chart(drawdowns, color=[SERIES_COLORS[c] for c in drawdowns.columns])
+
+    st.subheader("Exposure")
+    st.caption(
+        "Fraction of equity held in the asset. Above 1.0x is geared; 0.0x is "
+        "fully in cash during a risk-off regime."
+    )
+    st.area_chart(result.exposure, color=SERIES_COLORS["strategy"])
+
+    with st.expander("Full metrics table (all models)"):
+        st.dataframe(
+            metrics_table(
+                {
+                    "strategy": strategy_metrics,
+                    "buy_and_hold": bh_metrics,
+                    "dma_crossover": dma_metrics,
+                }
+            ),
+            use_container_width=True,
+        )
 
     st.subheader("Regime")
     current_regime = latest_regime(result.regimes)
@@ -177,13 +274,20 @@ def main() -> None:
     else:
         st.warning("No regime classified yet (insufficient warmup history).")
 
-    regime_codes = regime_series_to_numeric(result.regimes)
-    if regime_codes.notna().any():
-        st.caption(
-            "Regime timeline (0=Structural Bear, 1=Compressed Liquidity, "
-            "2=Volatile Distribution, 3=Sustained Bull)"
+    regime_counts = result.regimes.dropna().value_counts()
+    if not regime_counts.empty:
+        share = (regime_counts / regime_counts.sum() * 100).round(1)
+        st.caption("Share of bars spent in each regime")
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "regime": [REGIME_LABELS.get(str(k), str(k)) for k in share.index],
+                    "bars": regime_counts.to_numpy(),
+                    "share_%": share.to_numpy(),
+                }
+            ).set_index("regime"),
+            use_container_width=True,
         )
-        st.area_chart(regime_codes)
 
     st.subheader("Trade Log")
     ledger = result.ledger
