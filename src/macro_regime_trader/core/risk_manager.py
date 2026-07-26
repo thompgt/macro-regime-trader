@@ -18,10 +18,16 @@ Precedence of checks, evaluated in this order on every call:
    ``kill_switch_drawdown_pct`` permanently locks the system and persists
    ``TRADING_LOCKED.json``.
 4. Intra-day circuit breaker halt in progress: countdown decremented, signal
-   vetoed.
+   vetoed. On the bar the countdown reaches zero the session baseline is
+   rebased to current equity, so a breaker that tripped on a real drawdown
+   cannot immediately re-trip against a baseline equity has not recovered to.
 5. Intra-day circuit breaker trip: session drawdown exceeding
    ``circuit_breaker_drawdown_pct`` starts a new halt.
 6. Otherwise the signal is approved unchanged.
+
+Callers driving a multi-session backtest must call :meth:`reset_session` when
+the calendar session rolls over; otherwise the breaker's baseline only ever
+moves on halt expiry and it measures drawdown from the start of the run.
 """
 
 from __future__ import annotations
@@ -111,6 +117,12 @@ class RiskManager:
 
         if self._halt_steps_remaining > 0:
             self._halt_steps_remaining -= 1
+            if self._halt_steps_remaining == 0:
+                # Rebase the session baseline as the halt lifts. Without this the
+                # next bar is compared against the pre-drawdown baseline it has
+                # not recovered to yet, so the breaker re-trips immediately and
+                # the system stays vetoed forever (a deadlock).
+                self._session_start_equity = current_equity
             return RiskDecision(
                 approved=False,
                 adjusted_exposure=0.0,
